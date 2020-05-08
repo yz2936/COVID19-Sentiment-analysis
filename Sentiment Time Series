@@ -1,0 +1,106 @@
+# import text data with hour frequency
+tw <- read.csv('/Users/ericzhuang/Downloads/Usable data/text as data final/whole_hour.csv')
+tw$text <- tolower(tw$text)
+# remove punctuation
+tw$text <- gsub("[[:punct:]]", "", tw$text)
+# remove special characters
+
+# remove links
+tw$text <- gsub("http\\w+", "", tw$text)
+# remove tab
+tw$text <- gsub("[ |\t]{2,}", "", tw$text)
+# replace line break
+tw$text <- gsub("[\r\n]", " ", tw$text)
+# remove emoji
+tw$text <- gsub('<.*>', '', tw$text)
+#remove blank space
+tw$text <- gsub("^ ", "", tw$text)
+tw$text <- gsub(" $", "", tw$text)
+colnames(tw)
+
+tw <- tw %>%
+  group_by(date, time) %>%
+  summarise(
+    text = paste(text, collapse = "")) 
+tw <- tw[-1,]
+
+# import pos and neg dictionary
+x <- scan("/Users/ericzhuang/Downloads/positive-words.txt", what="", sep="\n")
+y <- scan("/Users/ericzhuang/Downloads/negative-words.txt", what="", sep="\n")
+pos <- list(x)
+neg <- list(y)
+sent_score <- dictionary(list(positive = pos,negetive = neg))
+# create a positive & negative word dictionary
+tw_dic <- dfm(as.character(tw$text), dictionary = sent_score)
+sentiment_df <- convert(tw_dic, to = 'data.frame')
+rownames(sentiment_df) <- sentiment_df$document
+sentiment_df <- select(sentiment_df, -c(document))
+sentiment_df
+
+# adding 1 score to all the values and calculate the proportion. I do this because some 
+# tweets are really short which yield 0 score for positive or negative score. This could 
+# potentially impact the results. 
+sentiment_df <- sentiment_df + 1
+sentiment_df$pos_pro <- sentiment_df$positive / (sentiment_df$positive + sentiment_df$negetive)
+sentiment_df$neg_pro <- sentiment_df$negetive / (sentiment_df$positive + sentiment_df$negetive)
+sentiment_df
+
+# merge sentiment dataframe to the original text file
+tw$id <- seq.int(nrow(tw))
+sentiment_df$id <- seq.int(nrow(sentiment_df))
+tw_sent <- merge(tw, sentiment_df, by = 'id')
+colnames(tw_sent)
+
+# average sentiment for each day
+ave_sentiment <- tw_sent %>% group_by(date) %>% summarise(average_postive = mean(pos_pro),
+                                                          average_negative = mean(neg_pro))
+mean(ave_sentiment[1:15,])
+
+# create melted dataframe
+melted <- reshape2::melt(ave_sentiment, id.var = 'date')
+melted$date <- as.Date(melted$date)
+melted
+# plot
+melted %>% 
+  ggplot(aes(x = date, y = value, group = variable, color = variable)) +
+  ylim(0.3,0.7) + 
+  ggtitle("COVID19 Sentiment Time Line with Major Events")+
+  geom_line() +
+  geom_vline(xintercept = as.numeric(melted$date[16]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[16], label="travel ban", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[3]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[3], label="grand princess", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[10]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[10], label="national state of emergency", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[8]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[8], label="global pandemic", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[12]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[12], label="US ases surpass 3000", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[13]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[13], label="gathering ban", y=0.58), colour="red", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[15]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[15], label="4th trade halt", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[17]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[17], label="stock worst week", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[18]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[18], label="NY10000 cases", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[19]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[19], label="stimulus bill failed", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[21]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[21], label="US50000 cases", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[23]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[23], label="US cases pass china", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[24]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[24], label="stimulus pack", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[29]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[29], label="youngest covid death", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[30]), linetype = "dotted", color = "brown") +
+  geom_text(aes(x=melted$date[30], label="unemployment surges", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[36]), linetype = "dotted", color = "brown")+
+  geom_text(aes(x=melted$date[36], label="NY highest single-day death ", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[39]), linetype = "dotted", color = "brown")+
+  geom_text(aes(x=melted$date[39], label="US death surpass italy", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))+
+  geom_vline(xintercept = as.numeric(melted$date[42]), linetype = "dotted", color = "brown")+
+  geom_text(aes(x=melted$date[42], label="Trump to halt funding WHO", y=0.58), colour="grey", angle=90, vjust = 1, text=element_text(size=2))
+
+  
