@@ -1,0 +1,102 @@
+library(dplyr)
+library(quanteda)
+library(text2vec)
+library(quanteda.corpora)
+library(factoextra)
+library(lsa)
+library(stringi)
+library(stringr)
+library(tidyverse)
+library(topicmodels)
+library(tidytext)
+require(quanteda.textmodels)
+library(quanteda.textmodels)
+library(stm)
+library(geometry)
+library(devtools)
+library(lubridate)
+library(ggplot2)
+library(wordcloud)
+library(tm)
+library(syuzhet)
+library(lessR)
+library('utf8')
+
+
+# loading data
+tw <- read.csv('/Users/ericzhuang/Downloads/Usable data/text as data final/whole1.csv')
+# convert all to lower case
+tw$text <- tolower(tw$text)
+# remove punctuation
+tw$text <- gsub("[[:punct:]]", "", tw$text)
+# remove special characters
+
+# remove links
+tw$text <- gsub("http\\w+", "", tw$text)
+# remove tab
+tw$text <- gsub("[ |\t]{2,}", "", tw$text)
+# replace line break
+tw$text <- gsub("[\r\n]", " ", tw$text)
+# remove emoji
+tw$text <- gsub('<.*>', '', tw$text)
+#remove blank space
+tw$text <- gsub("^ ", "", tw$text)
+tw$text <- gsub(" $", "", tw$text)
+
+# creating the pre travel ban filter
+pre_tw <- tw %>% filter(as.Date(created_at) < as.Date("2020-03-19"))
+# createing the post travel ban filter
+post_tw <- tw %>% filter(as.Date(created_at) >= as.Date("2020-03-19"))
+# merge text by day
+pre_tw<- pre_tw %>%
+  group_by(created_at) %>%
+  summarise(
+    text = paste(text, collapse = "")) 
+post_tw <- post_tw %>%
+  group_by(created_at) %>%
+  summarise(
+    text = paste(text, collapse = "")) 
+#converting the text into corpus
+pre_corpus <- Corpus(VectorSource(pre_tw$text))
+post_corpus <- Corpus(VectorSource(post_tw$text))
+pre_corpus
+
+# remove stop words
+# add stop words (corona virus / covid 19)
+mystop <- c(stopwords("english"), 'covid19', 'coronavirus','coronaviruspandemic','coronavirusoutbreak','covid','covid2019')
+pre_corpus <- tm_map(pre_corpus, removeWords, mystop)
+post_corpus <- tm_map(post_corpus, removeWords, mystop)
+
+pre_df <- data.frame(pre_corpus)
+# wordcloud
+wordcloud(pre_corpus,min.freq = 70,colors=brewer.pal(8, "Dark2"),random.color = TRUE,max.words = 100)
+wordcloud(post_corpus,min.freq = 70,colors=brewer.pal(8, "Dark2"),random.color = TRUE,max.words = 100)
+
+# sentiment for pre travel ban tweets
+sentiment_pre <- get_nrc_sentiment(pre_tw$text)
+sentimentscores_pre<-data.frame(colSums(sentiment_pre[,]))
+names(sentimentscores_pre)<-"Score"
+sentimentscores_pre<-cbind("sentiment"=rownames(sentimentscores_pre),sentimentscores_pre)
+rownames(sentimentscores_pre) <- NULL
+
+# standardize the data
+sentimentscores_pre$proportion <- sentimentscores_pre$Score / sum(sentimentscores_pre$Score)
+sentimentscores_pre$category <- 'pre_travelban'
+
+# sentiment for post travel ban tweets
+sentiment_post <- get_nrc_sentiment(post_tw$text)
+sentimentscores_post<-data.frame(colSums(sentiment_post[,]))
+names(sentimentscores_post)<-"Score"
+sentimentscores_post<-cbind("sentiment"=rownames(sentimentscores_post),sentimentscores_post)
+rownames(sentimentscores_post) <- NULL
+
+# standardize the data
+sentimentscores_post$proportion <- sentimentscores_post$Score / sum(sentimentscores_post$Score)
+sentimentscores_post$category <- 'post_travelban'
+sentimentscores_post
+sentimentscores_pre
+
+# concatenate two dataframes and plot
+full <- rbind(sentimentscores_pre, sentimentscores_post)
+ggplot(full, aes(fill = category, y = proportion, x = sentiment)) + geom_bar(position = "dodge", stat = "identity") +
+  ggtitle("NRC Sentiment Distribution")
