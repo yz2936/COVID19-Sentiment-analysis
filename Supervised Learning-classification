@@ -1,0 +1,131 @@
+# loading data
+tw <- read.csv('/Users/ericzhuang/Downloads/Usable data/text as data final/whole1.csv')
+tw <- tw %>% select(created_at, text)
+tw$text <- as.character(tw$text)
+tw$text <- gsub("#","",tw$text)
+tw$text <- gsub("http\\w+", "", tw$text)
+# create a binary column
+tw$pre_post <-ifelse(as.Date(tw$created_at) < as.Date("2020-03-19"),0, 1)
+
+# randomnize dataframe
+set.seed(1984L)
+rows <- sample(nrow(tw))
+tw <- tw[rows,]
+tw <- tw[1:5000,]
+
+# split train-test dataset
+ids_test <- createDataPartition(1:nrow(tw), p = 0.2, list = FALSE,
+                                 times = 1)
+ids_train <- ids[-ids_test]
+train_set <- tw[ids_train,]
+test_set <- tw[ids_test,]
+# get dfm
+mystop <- c(stopwords("english"), "http","https","rt", "t.co", "coronavirus", 
+            "coronavirusoutbreak", "coronaoutbreak","coronaviruspandemic", "covid19", 
+            "covid_19","covid19","epitwitter", "ihavecorona", "stayhomestaysafe", 
+            "testtraceisolate","coronapocolyps","coronapocalyps","coronaviruspandem")
+train_dfm <- dfm(train_set$text, stem = TRUE, tolower = T,
+                 remove_punct = TRUE, remove_numbers = TRUE,
+                 remove = mystop)
+test_dfm <- dfm(test_set$text, stem = TRUE, tolower = T,
+                remove_punct = TRUE, remove_numbers = TRUE,remove = 
+                mystop)
+test_dfm <- dfm_match(test_dfm, features = featnames(train_dfm))
+
+# Naive bayes
+nb_model <- textmodel_nb(train_dfm, train_set$pre_post, smooth = 1, prior =
+                           "uniform")
+predicted_class <- predict(nb_model, newdata = test_dfm)
+baseline_acc <- max(prop.table(table(test_set$class)))
+
+cmat <- table(test_set$pre_post, predicted_class)
+nb_acc <- sum(diag(cmat))/sum(cmat)
+nb_recall <- cmat[2,2]/sum(cmat[2,]) # recall = TP / (TP + FN)
+nb_precision <- cmat[2,2]/sum(cmat[,2]) # precision = TP / (TP + FP)
+nb_f1 <- 2*(nb_recall*nb_precision)/(nb_recall + nb_precision)
+
+cat(
+  "Accuracy:", nb_acc, "\n",
+  "Recall:", nb_recall, "\n",
+  "Precision:", nb_precision, "\n",
+  "F1-score:", nb_f1
+)
+
+
+# svm linear
+tw_svm <- tw[1:5000,]
+tw_dfm_svm <- dfm(tw_svm$text, stem = TRUE, remove_punct = TRUE,
+                  remove_numbers = TRUE,
+                  remove = mystop) %>% convert("matrix")
+ids_train <- createDataPartition(1:nrow(tw_dfm_svm), p = 0.2, list = FALSE,
+                                 times = 1)
+train_x <- tw_dfm_svm[ids_train, ] %>% as.data.frame()
+train_y <- tw_svm$pre_post[ids_train] %>% as.factor()
+test_x <- tw_dfm_svm[-ids_train, ] %>% as.data.frame()
+test_y <- tw_svm$pre_post[-ids_train] %>% as.factor() 
+
+trctrl <- trainControl(method = "none")
+svm_mod_linear <- train(x = train_x,
+                        y = train_y,
+                        method = "svmLinear",
+                        trControl = trctrl)
+svm_linear_pred <- predict(svm_mod_linear, newdata = test_x)
+svm_linear_cmat <- confusionMatrix(svm_linear_pred, test_y)
+svm_linear_cmat
+
+#baseline
+baseline_acc <- max(prop.table(table(test_y)))
+# svm - radial
+svm_mod_radial <- train(x = train_x,
+                        y = train_y,
+                        method = "svmRadial",
+                        trControl = trctrl)
+svm_radial_pred <- predict(svm_mod_radial, newdata = test_x)
+svm_radial_cmat <- confusionMatrix(svm_radial_pred, test_y)
+cat(
+  "Baseline Accuracy: ", baseline_acc, "\n",
+  "SVM-Linear Accuracy:", svm_linear_cmat$overall[["Accuracy"]], "\n",
+  "SVM-Radial Accuracy:", svm_radial_cmat$overall[["Accuracy"]]
+)
+
+# svm with 30% validation 
+# svm - radial
+ids_train <- createDataPartition(1:nrow(tw_dfm_svm), p = 0.7, list = FALSE,
+                                 times = 1)
+train_x <- tw_dfm_svm[ids_train, ] %>% as.data.frame()
+train_y <- tw_svm$pre_post[ids_train] %>% as.factor()
+test_x <- tw_dfm_svm[-ids_train, ] %>% as.data.frame()
+test_y <- tw_svm$pre_post[-ids_train] %>% as.factor() 
+val_x <- test_x
+val_y <- test_y
+trctrl <- trainControl(method = "cv",number = 5)
+svm_mod_radial <- train(x = train_x,
+                        y = train_y,
+                        method = "svmRadial",
+                        trControl = trctrl)
+svm_radial_pred <- predict(svm_mod_radial, newdata = test_x)
+svm_radial_cmat <- confusionMatrix(svm_radial_pred, test_y)
+svm_radial_cmat
+
+
+# random forest
+mtry <- sqrt(ncol(train_x)) # number of features to sample at each split
+ntree <-  100# num of trees to grow
+rf.base <- randomForest(x = train_x, y = train_y, ntree = ntree, mtry = mtry,
+                        importance = TRUE)
+varImpPlot(rf.base, n.var = 10, main = "Variable Importance")
+
+predict_test <- predict(rf.base, newdata = test_x)
+cmat <- table(test_y, predict_test)
+nb_acc <- sum(diag(cmat))/sum(cmat)
+nb_recall <- cmat[2,2]/sum(cmat[2,])
+nb_precision <- cmat[2,2]/sum(cmat[,2]) 
+nb_f1 <- 2*(nb_recall*nb_precision)/(nb_recall + nb_precision)
+
+cat(
+  "Baseline Accuracy: ", baseline_acc, "\n",
+  "Accuracy:", nb_acc, "\n",
+  "Recall:", nb_recall, "\n",
+  "Precision:", nb_precision, "\n",
+  "F1-score:", nb_f1
+)
