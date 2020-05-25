@@ -1,0 +1,307 @@
+# Create date vectors
+tw$datetime <- as.POSIXct(strptime(tw$created_at, "%Y-%m-%dT%H:%M:%SZ",tz = "GMT")) # full date/timestamp
+tw$date <- mdy(paste(month(tw$datetime), day(tw$datetime), year(tw$datetime), sep = "-")) # date only
+
+# Collapse tweets so we are looking at the total tweets at the day level
+tweets_sum <- tw %>% group_by(date) %>% summarise(text = paste(text, collapse = " "))
+
+dim(tweets_sum)
+# drop last row with nan
+tweets_sum <- tweets_sum[-nrow(tweets_sum),]
+tweets_sum[43,]
+
+# Remove #
+tweets_sum$text <- gsub('#', '', tweets_sum$text)
+# Remove Mentions
+tweets_sum$text <- gsub('@\\S+', '', tweets_sum$text)
+# Remove amp
+tweets_sum$text <- gsub('amp', '', tweets_sum$text)
+# Get rid of URLs
+tweets_sum$text <- gsub("http[[:alnum:]]*",'', tweets_sum$text)
+tweets_sum$text <- gsub('http\\S+\\s*', '', tweets_sum$text)
+# Remove RT
+tweets_sum$text <- gsub('\\b+RT', '', tweets_sum$text)
+## Remove Controls and special characters
+tweets_sum$text <- gsub('[[:cntrl:]]', '', tweets_sum$text)
+tweets_sum$text <- gsub("\\d", '', tweets_sum$text)
+# remove tab
+tweets_sum$text <- gsub("[ |\t]{2,}", "", tweets_sum$text)
+# replace line break
+tweets_sum$text <- gsub("[\r\n]", " ", tweets_sum$text)
+# remove emoji
+tweets_sum$text <- gsub('<.*>', '', tweets_sum$text)
+# Remove non ASCII characters
+tweets_sum$text <- stringi::stri_trans_general(tweets_sum$text, "latin-ascii")
+tweets_sum$text <- gsub("[^\x01-\x7F]", "", tweets_sum$text)
+# Removes solitary letters
+tweets_sum$text <- gsub(" [A-z] ", " ", tweets_sum$text)
+#remove leading and trailing blank space
+tweets_sum$text <- gsub("^[[:space:]]*","",tweets_sum$text)
+tweets_sum$text <- gsub("[[:space:]]*$","",tweets_sum$text)
+tweets_sum$text <- gsub(' +',' ',tweets_sum$text)
+
+# creating the pre travel ban filter
+pre_tweets_sum <- tweets_sum %>% filter(as.Date(date) < as.Date("2020-03-19"))
+# creating the post travel ban filter
+post_tweets_sum <- tweets_sum %>% filter(as.Date(date) >= as.Date("2020-03-19"))
+
+# add labels
+pre_tweets_sum$period <- "Preclosure"
+post_tweets_sum$period <- "Postclosure"
+
+pre_tweets_sum[10,]
+post_tweets_sum[10,]
+
+#converting the text into corpus
+#pre_corpus <- Corpus(VectorSource(pre_tw$text))
+#post_corpus <- Corpus(VectorSource(post_tw$text))
+#pre_corpus
+
+# remove stop words
+# add stop words (web links, corona virus / covid 19)
+mystop <- c(stopwords("english"), "http","https","rt", "t.co", "coronavirus", "coronaviruspandemic", "coronavirusupdate", "coronapocolypse", "covid19", "covid", "covid_19", "epitwitter", "ihavecorona", "stayhomestaysafe", "testtraceisolate")
+
+# Create DFM
+tweets_sum_dfm <-dfm(tweets_sum$text, stem = F, remove_punct = T, tolower = T, remove_numbers = TRUE, remove = mystop) %>% dfm_trim(min_termfreq = 20)
+dim(tweets_sum_dfm)
+
+## LDA Topic models
+
+# Selecting K
+
+# Identify an appropriate number of topics (FYI, this function takes a while)
+k_optimize_tw <- FindTopicsNumber(
+  tweets_sum_dfm,
+  topics = seq(from = 5, to = 50, by = 5),
+  metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 2017),
+  mc.cores = detectCores(), # to usa all cores available
+  verbose = TRUE
+)
+
+FindTopicsNumber_plot(k_optimize_tw)
+
+## Visualizing Word weights
+
+# Set number of topics
+k <- 25
+
+# Fit the topic model with the chosen k
+system.time(
+  tweets_sum_tm <- LDA(tweets_sum_dfm, k = k, method = "Gibbs",  control = list(seed = 1234, iter = 3000)))
+
+# Other parameters that we do not use here (because they increase the time the model takes) can be passed to the control parameter
+?`LDAcontrol-class`
+# iter : num iterations
+# thin : every thin iteration is returned for iter iterations
+# burnin : number of initial iterations discarded
+
+## Letter soup
+
+# gamma = posterior document distribution over topics
+# what are the dimensions of gamma?
+dim(tweets_sum_tm@gamma)
+tweets_sum_tm@gamma[1:5,1:5]
+rowSums(tweets_sum_tm@gamma) # each row sums to?
+
+# beta = topic distribution over words
+dim(tweets_sum_dfm)  # how many features do we have?
+dim(tweets_sum_tm@beta)
+tweets_sum_tm@beta[1:5,1:5]
+sum(tweets_sum_tm@beta[1,]) # each row sums to?
+sum(exp(tweets_sum_tm@beta[5,])) # each row sums to?
+
+# Per topic per word proabilities matrix (beta)
+tw_topics <- tidy(tweets_sum_tm, matrix = "beta") 
+head(tw_topics)
+
+# Side note: You can pass objects between tidytext() and topicmodels() functions because tidytext() implements topic models from topicmodels()
+
+# Generates a df of top terms
+tw_top_terms <- tw_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+head(tw_top_terms)
+
+# Creates a plot of the weights and terms by topic
+tw_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+
+# Creates a plot of features with greatest difference in word probabilities between two topics
+tw_topics %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  filter(topic %in% c("topic1", "topic2")) %>%
+  spread(topic, beta) %>%
+  filter(topic1 > .001 | topic2 > .001) %>%
+  mutate(log_ratio = log2(topic2 / topic1)) %>%
+  arrange(-abs(log_ratio)) %>%
+  slice(c(1:10,(nrow(.)-9):nrow(.))) %>%
+  arrange(-log_ratio) %>%
+  mutate(term = factor(term, levels = unique(term))) %>%
+  ggplot(aes(as.factor(term), log_ratio)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Terms") + ylab("Log-Ratio") +
+  coord_flip()
+
+## Visualizing topic trends over time
+
+# Store the results of the mixture of documents over topics 
+doc_topics <- tweets_sum_tm@gamma
+
+# Store the results of words over topics
+#words_topics <- blm_tm@beta
+
+# Transpose the data so that the days are columns
+doc_topics <- t(doc_topics)
+dim(doc_topics)
+class(doc_topics)
+doc_topics <- doc_topics[-1,]
+doc_topics <- doc_topics[-22,]
+doc_topics[1:23,1:5]
+
+# Arrange topics
+# Find the top topic per column (day)
+max <- apply(doc_topics, 2, which.max)
+
+# Write a function that finds the second max
+which.max2 <- function(x){
+  which(x == sort(x,partial=(k-1))[k-1])
+}
+
+max2 <- apply(doc_topics, 2, which.max2)
+max2 <- sapply(max2, max)
+
+# Coding country lockdown events
+event <- mdy(c("03/19/2020"))
+
+# Combine data
+top2 <- data.frame(top_topic = max, second_topic = max2, date = ymd(tweets_sum$date))
+top2
+
+# Plot
+tw_plot <- ggplot(top2, aes(x=date, y=top_topic, pch="First")) 
+
+tw_plot + geom_point(aes(x=date, y=second_topic, pch="Second") ) +theme_bw() + 
+  ylab("Topic Number") + ggtitle("Covid19-Related Tweets from 2020 March 1st to April 15th over Topics") + geom_point() + xlab(NULL) + 
+  geom_vline(xintercept=as.numeric(event), color = "blue", linetype=4) + 
+  scale_shape_manual(values=c(18, 1), name = "Topic Rank")
+
+# Examine the top 10 words that contribute the most to each topic
+top10_tw <- get_terms(tweets_sum_tm, 10)
+top10_tw
+
+tw_topics_table <- as.data.frame(table(topics(tweets_sum_tm)))
+tw_topics_table[order(-tw_topics_table$Freq),]
+
+# Find the average contribution of a topic over the period
+
+dim(tweets_sum_tm@gamma)
+doc_topics_df <- as.data.frame(tweets_sum_tm@gamma)
+doc_topics_df["period"] <- c(pre_tweets_sum$period, post_tweets_sum$period)
+aggregate(doc_topics_df[, c(11,19,7)], list(doc_topics_df$period), mean)
+
+# Word Fish
+
+period_vector <- c(pre_tweets_sum$period, post_tweets_sum$period)
+
+#create data frame
+tw_df <- data.frame(date = factor(tweets_sum$date),
+                     period = factor(period_vector),
+                     text = tweets_sum$text,
+                     stringsAsFactors = FALSE)
+
+# add text labels
+tw_df$text_label <- paste(tw_df$period, tw_df$date, sep = "_")
+
+# remove stop words
+# add stop words (web links, corona virus / covid 19)
+mystop <- c(stopwords("english"), "http","https","rt", "t.co", "coronavirusoutbreak", "coronavirus", "coronaviruspandemic", "coronavirusupdate", "coronapocolypse", "covid19", "covid", "covid_19", "epitwitter", "ihavecorona", "stayhomestaysafe", "testtraceisolate")
+
+# Create DFM for Word Fish Model
+tweets_wf_dfm <-dfm(tw_df$text, stem = T, remove_punct = T, tolower = T, remove_numbers = TRUE, remove = mystop)
+
+# Reduce sparcity
+tweets_wf_dfm2 <- dfm_trim(tweets_wf_dfm, min_termfreq = 5, verbose = TRUE)
+dim(tweets_wf_dfm2)
+length(tweets_sum$date)
+
+# fit wordfish
+tweets_wf_dfm2@Dimnames$docs <- tw_df$text_label
+
+# Setting the index on parties
+tw_fish <- textmodel_wordfish(tweets_wf_dfm2, c(9,17)) # second parameter corresponds to index texts
+
+# visualize one-dimensional scaling
+textplot_scale1d(tw_fish)
+textplot_scale1d(tw_fish, groups = tw_df$period)
+tw_fish$theta
+
+# Plot of document positions
+plot(tweets_sum$date[1:15], tw_fish$theta[1:15]) # These are the tweets from Pre-closure period
+plot(tweets_sum$date[16:43], tw_fish$theta[16:43], pch = 8) # These are the tweets from Post-closure period
+
+plot(as.factor(period_vector), tw_fish$theta)
+
+# most important features--word fixed effects
+words <- tw_fish$psi # values
+names(words) <- tw_fish$features # the words
+
+sort(words)[1:50]
+sort(words, decreasing=T)[1:50]
+
+# Guitar plot
+weights <- tw_fish$beta
+
+plot(weights, words)
+
+## stm
+
+tw_df$day <- yday(tw_df$date)
+temp <- textProcessor(documents=tw_df$text, metadata = tw_df, customstopwords = mystop)
+out <- prepDocuments(temp$documents, temp$vocab, temp$meta, lower.thresh = 10)
+out$meta$day <- as.numeric(out$meta$day)
+out$meta$day
+
+system.time(
+  news_stm <- stm(out$documents, out$vocab, K = 0, seed = 2020, max.em.its= 75, prevalence = ~period + s(day), data = out$meta, init.type = "Spectral"))
+
+plot(news_stm, type = "summary")
+plot(news_stm, type = "labels")
+
+labelTopics(news_stm, c(18,20))
+
+system.time(
+  tw_stm <- stm(out$documents, out$vocab, K = 25, max.em.its= 75, prevalence = ~period + s(day), data = out$meta, init.type = "Spectral"))
+
+plot(tw_stm, type = "summary")
+plot(tw_stm, type = "labels")
+
+plot(twContent, type = "summary")
+labelTopics(tw_stm, c(8))
+plot(tw_stm, type = "perspectives", topics = c(18, 20))
+
+twContent <- stm(out$documents, out$vocab, K = 25, prevalence =~ period + s(day), content =~ period, max.em.its = 75, data = out$meta, init.type = "Spectral")
+plot(twContent, type = "perspectives", topics = 18)
+
+out$meta$period <- as.factor(out$meta$period)
+prep <- estimateEffect(1:25 ~ period + s(day), tw_stm, meta = out$meta, uncertainty = "Global")
+summary(prep, topics=8)
+
+# Plots the Difference in coverage of the topics according to preclosure and postclosure period
+plot(prep, "period", model = tw_stm,
+     method = "difference", cov.value1 = "Postclosure", cov.value2 = "Preclosure", 
+     xlab = "More Preclosure ... More Postclosure",
+     main = "Effect of border closure",
+     labeltype = "custom", custom.labels = c('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25'))
+
+# Plots the distribution of topics over time
+plot(prep, "day", tw_stm, topics = c(20), 
+     method = "continuous", xaxt = "n", xlab = "Date")
